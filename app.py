@@ -74,20 +74,19 @@ def get_last_uptime():
         app.logger.error(f"读取{TIME_FILE}文件失败:{e}")  # 统一记录日志，并包含文件名
         return None, None
 
-def to_millis(dt: datetime.datetime):
+def to_millis(dt: datetime.datetime) -> int:
     """将Python datetime转成UTC毫秒时间戳"""
     if dt.tzinfo is None:
         # 假设你的 dt 已经是 UTC naive datetime
         dt = dt.replace(tzinfo=datetime.timezone.utc)
     else:
-        # 若有 tzinfo，则先转到 UTC
         dt = dt.astimezone(datetime.timezone.utc)
     epoch = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
     delta = dt - epoch
     return int(delta.total_seconds() * 1000)
 
 def fetch_missing_orders(start_time, end_time):
-    """请求指定时间段内的遗漏订单（一次拉取方式），使用毫秒级 created_at_range。"""
+    """请求指定时间段内的遗漏订单，支持分页，使用毫秒级 created_at_range。"""
     if not start_time or not end_time:
         app.logger.warning("开始或结束时间为空，无法请求遗漏订单。")
         return []
@@ -100,45 +99,72 @@ def fetch_missing_orders(start_time, end_time):
     start_ts = to_millis(start_time)
     end_ts = to_millis(end_time)
 
-    # 构造搜索字符串
+    # 构造 created_at_range 查询字符串
     filter_str = f"created_at_range:[{start_ts} TO {end_ts}]"
 
-    query = f"""
-    query MyQuery {{
-      orders(query: "{filter_str}", first: 500) {{
-        edges {{
-          node {{
+    orders = []
+    has_next_page = True
+    after_cursor = None
+    page_size = 100  # 根据需要调整，每次请求的订单数
+
+    gql_query = """
+    query Orders($query: String!, $first: Int!, $after: String) {
+      orders(query: $query, first: $first, after: $after) {
+        edges {
+          node {
             id
-          }}
-        }}
-      }}
-    }}
+          }
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+    }
     """
 
     headers = {
-        "Content-Type": "application/graphql",
-        "Custom-AllValue-Access-Token": access_token
+        "Content-Type": "application/json",
+        "custom-allvalue-access-token": access_token
     }
 
-    orders = []
-    try:
-        resp = requests.post(ALLVALUE_GRAPHQL_ENDPOINT, headers=headers, data=query)
-        resp.raise_for_status()
-        data = resp.json()
+    while has_next_page:
+        variables = {
+            "query": filter_str,
+            "first": page_size,
+            "after": after_cursor
+        }
 
-        if "errors" in data:
-            app.logger.error(f"GraphQL Error: {data['errors']}")
-            return []
+        payload = {
+            "query": gql_query,
+            "variables": variables
+        }
 
-        edges = data.get("data",{}).get("orders",{}).get("edges",[])
-        for edge in edges:
-            node = edge.get("node")
-            if node and node.get("id"):
-                orders.append(node["id"])
-    except requests.exceptions.RequestException as e:
-        app.logger.error(f"请求遗漏订单失败: {e}")
-    except Exception as e:
-        app.logger.exception(f"获取遗漏订单时发生未知错误: {e}")
+        try:
+            resp = requests.post(ALLVALUE_GRAPHQL_ENDPOINT, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+
+            if "errors" in data:
+                app.logger.error(f"GraphQL Error: {data['errors']}")
+                break
+
+            orders_conn = data.get("data", {}).get("orders", {})
+            edges = orders_conn.get("edges", [])
+            for edge in edges:
+                node = edge.get("node")
+                if node and node.get("id"):
+                    orders.append(node["id"])
+
+            page_info = orders_conn.get("pageInfo", {})
+            has_next_page = page_info.get("hasNextPage", False)
+            after_cursor = page_info.get("endCursor")
+        except requests.exceptions.RequestException as e:
+            app.logger.error(f"请求遗漏订单失败: {e}")
+            break
+        except Exception as e:
+            app.logger.exception(f"获取遗漏订单时发生未知错误: {e}")
+            break
 
     return orders
 
@@ -330,7 +356,7 @@ def fetch_order_details(access_token, nodeId):
 
     headers = {
         "Content-Type": "application/graphql",
-        "custom-allValue-access-token": access_token
+        "custom-allvalue-access-token": access_token
     }
 
     query = f"""
