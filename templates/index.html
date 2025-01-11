@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>快餐店订单管理</title>
+    <title>订单管理</title>
     <style>
         body {
             font-family: sans-serif;
@@ -44,48 +44,65 @@
     </style>
 </head>
 <body>
-    <h2>快餐店订单管理</h2>
+    <h2>订单管理</h2>
 
     <a class="settings-link" href="{{ url_for('settings') }}">设置 (打印机/自动打印)</a>
 
     <h3>订单列表</h3>
-    {% if orders %} {# 检查订单列表是否为空 #}
-    <table>
-        <thead>
-            <tr>
-                <th>ID</th>
-                <th>订单内容</th>
-                <th>状态</th>
-                <th>操作</th>
-            </tr>
-        </thead>
-        <tbody>
-        {% for order in orders %}
+{% if orders %}
+<table>
+    <thead>
         <tr>
-            <td>{{ order.id }}</td>
-            <td>
-                订单号: {{ order.order_json.order_id }} <br/>
-                商品:
-                {% for item in order.order_json.items %}
-                  {{ item.name }} x{{ item.qty }} ({{ item.price }}元)<br/> {# 每行显示一个商品 #}
-                {% endfor %}
-                总价: {{ order.order_json.total_price }}<br/>
-                下单时间: {{ order.order_json.timestamp }}
-            </td>
-            <td> {% if order.status == '已打印' %}class="printed"{% endif %}>{{ order.status }}</td> {# 已打印的订单添加样式 #}
-            <td>
-                {% if order.status != '已打印' %}
-                <a href="{{ url_for('print_order_route', order_id=order.id) }}">手动打印</a> {# 使用 print_order_route #}
-                {% else %}
-                <span class="printed">已打印</span> {# 已打印的订单显示为文本 #}
-                {% endif %}
-            </td>
+            <th>ID</th>
+            <th>订单信息</th>
+            <th>状态</th>
+            <th>操作</th>
         </tr>
-        {% endfor %}
-        </tbody>
-    </table>
-    {% else %}
-    <p>暂无订单。</p> {# 没有订单时显示提示信息 #}
-    {% endif %}
+    </thead>
+    <tbody>
+    {% for order in orders %}
+    <tr>
+        <td>{{ order.id }}</td>
+        <td>
+            <!-- 订单号 -->
+            订单号: {{ order.order_json.order_id }}<br/>
+
+            <!-- 收货地址（若存在）-->
+            {% if order.order_json.shipping_address %}
+                地址:
+
+                {{ order.order_json.shipping_address.address1 }}
+                <br/>
+                电话: {{ order.order_json.shipping_address.phone }}
+                <br/>
+            {% endif %}
+
+            <!-- 订单总金额 -->
+            {% if order.order_json.total_price %}
+                金额: {{ order.order_json.total_price.amount }}
+                {{ order.order_json.total_price.currency_code }}
+            {% endif %}
+        </td>
+
+        <!-- 状态列 -->
+        <td class="{{ 'printed' if order.status == '已打印' else '' }}">
+                {{ order.status }}
+        </td>
+
+        <!-- 操作列（打印 / 已打印）-->
+        <td>
+            {% if order.status != '已打印' %}
+                <a href="{{ url_for('print_order_route', order_id=order.id) }}">手动打印</a>
+            {% else %}
+                <span class="printed">已打印</span>
+            {% endif %}
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>暂无订单。</p>
+{% endif %}
 </body>
 </html>
