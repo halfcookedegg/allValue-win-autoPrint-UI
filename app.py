@@ -16,20 +16,26 @@ from database import (
     insert_or_update_order, get_all_orders, update_order, get_order_by_id
 )
 
+from apscheduler.schedulers.background import BackgroundScheduler
+
 app = Flask(__name__)
+
+# 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 app.logger.setLevel(logging.INFO)
-
-shop = os.environ.get("SHOP")
+# todo: 添加值
+shop = "test"
 ALLVALUE_GRAPHQL_ENDPOINT = f"https://{shop}.myallvalue.com/admin/api/open/graphql/v202108"
 ALLVALUE_WEBHOOK_SECRET = os.environ.get("ALLVALUE_WEBHOOK_SECRET")
-
 TIME_FILE = "uptime.json"
 first_request = True
+scheduler_started = False
 
-# --- 时间记录和补单相关函数 ---
-def record_uptime(start_time=None, end_time=None):
-    """记录应用上线或下线时间（UTC）。"""
+# 初始化 APScheduler
+scheduler = BackgroundScheduler()
+
+def record_uptime(end_time=None):
+    """记录时间到 uptime.json。"""
     data = {}
     try:
         if os.path.exists(TIME_FILE):
@@ -37,16 +43,12 @@ def record_uptime(start_time=None, end_time=None):
                 data = json.load(f)
     except json.JSONDecodeError:
         app.logger.warning("uptime.json 文件损坏，重新创建。")
-        data = {}
     except FileNotFoundError:
         app.logger.warning("uptime.json 文件不存在，创建新文件")
-        data = {}
     except IOError as e:
         app.logger.error(f"读取uptime.json文件失败:{e}")
-        data={}
 
-    if start_time:
-        data["start_time"] = start_time.isoformat()
+    # 只记录 end_time
     if end_time:
         data["end_time"] = end_time.isoformat()
 
@@ -57,27 +59,25 @@ def record_uptime(start_time=None, end_time=None):
         app.logger.error(f"写入 uptime.json 文件失败: {e}")
 
 def get_last_uptime():
-    """获取上次应用上线和下线时间（UTC）。"""
+    """获取上次记录的 end_time（UTC）。"""
     try:
         if os.path.exists(TIME_FILE):
             with open(TIME_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                start_time_str = data.get("end_time")
-                end_time_str = datetime.datetime.utcnow().isoformat()
-                if start_time_str and end_time_str:
-                    return datetime.datetime.fromisoformat(start_time_str), datetime.datetime.fromisoformat(
-                        end_time_str)
+                end_time_str = data.get("end_time")
+                if end_time_str:
+                    app.logger.info(f"从 {TIME_FILE} 中读取时间: end_time={end_time_str}")
+                    return datetime.datetime.fromisoformat(end_time_str) # 只返回 end_time
         else:
-            app.logger.warning(f"{TIME_FILE}文件不存在")  # 文件不存在也记录日志，方便排查
-            return None, None
+            app.logger.warning(f"{TIME_FILE}文件不存在")
+            return None
     except Exception as e:
-        app.logger.error(f"读取{TIME_FILE}文件失败:{e}")  # 统一记录日志，并包含文件名
-        return None, None
+        app.logger.error(f"读取{TIME_FILE}文件失败:{e}")
+        return None
 
 def to_millis(dt: datetime.datetime) -> int:
     """将Python datetime转成UTC毫秒时间戳"""
     if dt.tzinfo is None:
-        # 假设你的 dt 已经是 UTC naive datetime
         dt = dt.replace(tzinfo=datetime.timezone.utc)
     else:
         dt = dt.astimezone(datetime.timezone.utc)
@@ -85,10 +85,10 @@ def to_millis(dt: datetime.datetime) -> int:
     delta = dt - epoch
     return int(delta.total_seconds() * 1000)
 
-def fetch_missing_orders(start_time, end_time):
+def fetch_missing_orders(start_time):
     """请求指定时间段内的遗漏订单，支持分页，使用毫秒级 created_at_range。"""
-    if not start_time or not end_time:
-        app.logger.warning("开始或结束时间为空，无法请求遗漏订单。")
+    if not start_time:
+        app.logger.warning("开始时间为空，无法请求遗漏订单。")
         return []
 
     access_token = get_allvalue_access_token()
@@ -96,37 +96,44 @@ def fetch_missing_orders(start_time, end_time):
         app.logger.error("无法获取 AllValue 访问令牌，无法请求遗漏订单。")
         return []
 
+    end_time = datetime.datetime.utcnow() # 获取当前时间作为结束时间
     start_ts = to_millis(start_time)
     end_ts = to_millis(end_time)
 
-    # 构造 created_at_range 查询字符串
-    filter_str = f"created_at_range:[{start_ts} TO {end_ts}]"
+    if start_ts > end_ts:
+        app.logger.error("start_ts 大于 end_ts，无法请求遗漏订单。")
+        return []
 
-    orders = []
-    has_next_page = True
-    after_cursor = None
-    page_size = 100  # 根据需要调整，每次请求的订单数
-
+    # 使用正确的 GraphQL 查询语句
     gql_query = """
     query Orders($query: String!, $first: Int!, $after: String) {
       orders(query: $query, first: $first, after: $after) {
         edges {
+          cursor
           node {
-            id
+            nodeId
+            name
           }
         }
         pageInfo {
           hasNextPage
-          endCursor
         }
       }
     }
     """
 
     headers = {
-        "Content-Type": "application/json",
-        "custom-allvalue-access-token": access_token
+        "Custom-AllValue-Access-Token": access_token
     }
+
+    orders = []
+    has_next_page = True
+    after_cursor = None
+    page_size = 50  # 每次请求50个订单
+
+    # 构建查询字符串，使用 created_at_range 过滤
+    filter_str = f"created_at_range:[{start_ts} TO {end_ts}]"
+    app.logger.debug(f"Filter string: {filter_str}")
 
     while has_next_page:
         variables = {
@@ -135,13 +142,8 @@ def fetch_missing_orders(start_time, end_time):
             "after": after_cursor
         }
 
-        payload = {
-            "query": gql_query,
-            "variables": variables
-        }
-
         try:
-            resp = requests.post(ALLVALUE_GRAPHQL_ENDPOINT, headers=headers, json=payload)
+            resp = requests.post(ALLVALUE_GRAPHQL_ENDPOINT, headers=headers, json={"query": gql_query, "variables": variables}, timeout=10)
             resp.raise_for_status()
             data = resp.json()
 
@@ -153,12 +155,17 @@ def fetch_missing_orders(start_time, end_time):
             edges = orders_conn.get("edges", [])
             for edge in edges:
                 node = edge.get("node")
-                if node and node.get("id"):
-                    orders.append(node["id"])
+                if node:
+                    orders.append(node)  # 只保存 nodeId 和 name
 
             page_info = orders_conn.get("pageInfo", {})
             has_next_page = page_info.get("hasNextPage", False)
-            after_cursor = page_info.get("endCursor")
+            if edges:  # 避免 edges 为空时报错
+                after_cursor = edges[-1].get("cursor")
+
+        except requests.exceptions.Timeout:
+            app.logger.error("请求遗漏订单超时")
+            break
         except requests.exceptions.RequestException as e:
             app.logger.error(f"请求遗漏订单失败: {e}")
             break
@@ -168,20 +175,65 @@ def fetch_missing_orders(start_time, end_time):
 
     return orders
 
+def poll_orders():
+    """轮询获取遗漏订单的任务函数。"""
+    app.logger.info("开始轮询获取遗漏订单...")
+    start_time = get_last_uptime()
+    end_time = datetime.datetime.utcnow()
+    if start_time is None:
+        start_time = datetime.datetime.utcnow() - datetime.timedelta(hours=1)
+    if start_time and start_time < end_time:
+        app.logger.info(f"轮询时间范围：{start_time} 到 {end_time}")
+        missing_orders = fetch_missing_orders(start_time, end_time)
+        if missing_orders:
+            app.logger.info(f"发现 {len(missing_orders)} 个遗漏订单")
+            for order in missing_orders:
+                order_id = order.get("nodeId")  # 从 fetch_missing_orders 的返回结果中提取 nodeId
+                try:
+                    # 传递 nodeId 给 process_order_webhook
+                    process_order_webhook(order_id, should_print=get_setting('auto_print_enabled') == 'true')
+                    app.logger.info(f"成功补齐订单：{order_id}")
+                except OrderProcessingError as e:
+                    app.logger.error(f"补齐订单 {order_id} 失败: {e}")
+                except Exception as e:
+                    app.logger.exception(f"补齐订单 {order_id} 时发生未知错误: {e}")
+        else:
+            app.logger.info("未发现遗漏订单。")
+    else:
+        app.logger.info("没有需要轮询的时间范围。")
+    record_uptime(end_time=datetime.datetime.utcnow())
 
 @app.before_request
-def check_for_missing_orders():
-    """在应用启动后检查并处理遗漏订单。"""
+def initialize():
+    """在应用首次请求前初始化相关功能。"""
     global first_request
+    global scheduler_started
     if first_request:
-        start_time, end_time = get_last_uptime()
+        init_db()
+
+        polling_enabled = get_setting('polling_enabled') == 'true'
+
+        if polling_enabled:
+            if not scheduler_started:
+                scheduler.add_job(func=poll_orders, trigger="interval", hours=1, id='poll_orders_job')
+                scheduler.start()
+                scheduler_started = True
+                app.logger.info("已启动轮询任务。")
+        else:
+            app.logger.info("轮询任务未启用。")
+
+        # 首次请求时也检查遗漏订单
+        start_time = get_last_uptime()
+        end_time = datetime.datetime.utcnow()
         if start_time and end_time and start_time < end_time:
             app.logger.info(f"开始检查遗漏订单，时间范围：{start_time} 到 {end_time}")
-            missing_order_ids = fetch_missing_orders(start_time, end_time)
-            if missing_order_ids:
-                app.logger.info(f"发现 {len(missing_order_ids)} 个遗漏订单：{missing_order_ids}")
-                for order_id in missing_order_ids:
+            missing_orders = fetch_missing_orders(start_time)
+            if missing_orders:
+                app.logger.info(f"发现 {len(missing_orders)} 个遗漏订单")
+                for order in missing_orders:
+                    order_id = order.get("nodeId")  # 从 fetch_missing_orders 的返回结果中提取 nodeId
                     try:
+                        # 传递 nodeId 给 process_order_webhook
                         process_order_webhook(order_id, should_print=False)
                         app.logger.info(f"成功补齐订单：{order_id}")
                     except OrderProcessingError as e:
@@ -190,26 +242,14 @@ def check_for_missing_orders():
                         app.logger.exception(f"补齐订单 {order_id} 时发生未知错误: {e}")
             else:
                 app.logger.info("未发现遗漏订单。")
-        record_uptime(start_time=datetime.datetime.utcnow())
-        try:
-            if os.path.exists(TIME_FILE):
-                os.remove(TIME_FILE)
-                app.logger.info(f"成功删除上一个记录时间的日志文件：{TIME_FILE}")
-        except OSError as e:
-            app.logger.error(f"删除上一个记录时间的日志文件 {TIME_FILE} 失败: {e}")
-        except Exception as e:
-            app.logger.exception(f"删除上一个记录时间的日志文件 {TIME_FILE} 时发生未知错误: {e}")
-        first_request = False
 
-@atexit.register
-def on_exit():
-    record_uptime(end_time=datetime.datetime.utcnow())
+        record_uptime(end_time=datetime.datetime.utcnow())
+        first_request = False
 
 @app.route("/")
 def index():
     orders = get_all_orders()
     return render_template("index.html", orders=orders)
-
 
 @app.route("/print/<int:order_id>")
 def print_order_route(order_id):
@@ -224,26 +264,43 @@ def print_order_route(order_id):
         return redirect(url_for('index'))
     return "Printer not set", 500
 
-
 @app.route("/settings", methods=["GET", "POST"])
 def settings():
     if request.method == "POST":
         default_printer = request.form.get("default_printer")
-        auto_print_enabled = request.form.get("auto_print_enabled") == "on"
+        auto_print_enabled = request.form.get("auto_print_enabled") == 'on'
+        polling_enabled = request.form.get("polling_enabled") == 'on'
+
         set_setting("default_printer", default_printer)
         set_setting("auto_print_enabled", str(auto_print_enabled).lower())
+        set_setting("polling_enabled", str(polling_enabled).lower())
+
+        global scheduler_started
+        if polling_enabled and not scheduler_started:
+            scheduler.add_job(func=poll_orders, trigger="interval", hours=1, id='poll_orders_job')
+            if not scheduler.running:
+                scheduler.start()
+            scheduler_started = True
+            app.logger.info("已启动轮询任务。")
+        elif not polling_enabled and scheduler_started:
+            try:
+                scheduler.remove_job('poll_orders_job')
+                scheduler_started = False
+                app.logger.info("已停止轮询任务。")
+            except Exception as e:
+                app.logger.error(f"无法移除轮询任务: {e}")
 
         return redirect(url_for("settings"))
     return render_template("settings.html",
                            default_printer=get_setting('default_printer'),
                            auto_print_enabled=get_setting('auto_print_enabled') == 'true',
+                           polling_enabled=get_setting('polling_enabled') == 'true',
                            printers=[printer[2] for printer in win32print.EnumPrinters(2)])
-
 
 def verify_webhook_signature(request):
     """验证 Webhook 签名。"""
     md5_received = request.headers.get('X-AllValue-MD5')
-    shop_domain = request.headers.get('X-AllValue-Shop-Domain') # 加上shop_domain验证
+    shop_domain = request.headers.get('X-AllValue-Shop-Domain')
 
     if not md5_received or not shop_domain:
         app.logger.warning("缺少必要的 header: X-AllValue-MD5 或 X-AllValue-Shop-Domain")
@@ -256,6 +313,12 @@ def verify_webhook_signature(request):
     if md5_calculated != md5_received:
         app.logger.warning(f"Invalid webhook signature. Calculated: {md5_calculated}, Received: {md5_received}")
         return False
+
+    # 验证 shop_domain
+    if shop_domain != f"{shop}.myallvalue.com":
+        app.logger.warning(f"Invalid shop domain. Received: {shop_domain}")
+        return False
+
     return True
 
 class OrderProcessingError(Exception):
@@ -263,12 +326,13 @@ class OrderProcessingError(Exception):
     pass
 
 def parse_order_data(raw_order_data):
+    """解析订单数据"""
     if not raw_order_data:
         raise ValueError("raw_order_data is None or empty")
 
     # 1. 订单基础信息
-    order_id = raw_order_data.get("name")            # 订单号
-    created_at = raw_order_data.get("createdAt")     # 下单时间
+    order_id = raw_order_data.get("name")
+    created_at = raw_order_data.get("createdAt")
     contact_email = raw_order_data.get("contactEmail")
     customer_message = raw_order_data.get("customerMessage")
 
@@ -290,32 +354,22 @@ def parse_order_data(raw_order_data):
     }
 
     # 3. 订单行项目 (lineItems)
-    #   你在查询里写的是 lineItems { name quantity optionValues { name } }
-    #   一般返回一个数组而不是 edges/node。
-    line_items = raw_order_data.get("lineItems", [])
+    line_items = raw_order_data.get("lineItems", [])  # 直接获取 lineItems 列表
     parsed_items = []
-    for item_obj in line_items:
+    for item_obj in line_items:  # 直接遍历 lineItems 列表
         parsed_items.append({
             "name": item_obj.get("name"),
             "quantity": item_obj.get("quantity"),
-            # 如果有 optionValues，就解析为字符串列表或其他需要的格式
             "option_values": [
                 ov.get("name") for ov in item_obj.get("optionValues", [])
             ]
         })
 
     # 4. 订单总金额 (totalPrice)
-    #   根据你写的:
-    #   totalPrice {
-    #       shopMoney {
-    #           amount
-    #           currencyCode
-    #       }
-    #   }
     total_price_obj = raw_order_data.get("totalPrice", {})
     shop_money = total_price_obj.get("shopMoney", {})
     total_price = {
-        "amount": shop_money.get("amount"),         # 字符串形式 "299.00"
+        "amount": shop_money.get("amount"),  # 字符串形式 "299.00"
         "currency_code": shop_money.get("currencyCode")
     }
 
@@ -355,66 +409,80 @@ def fetch_order_details(access_token, nodeId):
         raise OrderProcessingError("order_node_id is None or empty")
 
     headers = {
-        "Content-Type": "application/graphql",
-        "custom-allvalue-access-token": access_token
+        "Custom-AllValue-Access-Token": access_token
     }
 
-    query = f"""
-    query MyQuery {{
-          order(nodeId: "{nodeId}") {{
+    # 修正后的 GraphQL 查询语句
+    gql_query = """
+    query OrderDetails($nodeId: NodeID!) {
+        order(nodeId: $nodeId) {
             name
             createdAt
-            shippingAddress {{      
-              address1
-              address2
-              city
-              province
-              country
-              zip
-              provinceCode
-              firstName
-              lastName
-              countryCode
-              company
-              phone
-            }}
-            lineItems {{
-              
-              name
-              quantity
-              optionValues {{
+            shippingAddress {
+                address1
+                address2
+                city
+                province
+                country
+                zip
+                provinceCode
+                firstName
+                lastName
+                countryCode
+                company
+                phone
+            }
+            lineItems {
+                name
+                quantity
+                optionValues {
                     name
-            }}
-            }}
+                }
+            }
             contactEmail
             customerMessage
-            totalPrice {{
-              shopMoney {{
-                amount
-                currencyCode
-              }}
-            }}
-            customer {{
-              email
-              firstName
-              lastName
-              phone
-            }}
-          }}
-        }}
+            totalPrice {
+                shopMoney {
+                    amount
+                    currencyCode
+                }
+            }
+            customer {
+                email
+                firstName
+                lastName
+                phone
+            }
+        }
+    }
     """
-    #如果请求失败抛出异常
+
+    variables = {
+        "nodeId": nodeId
+    }
+
+    payload = {
+        "query": gql_query,
+        "variables": variables
+    }
+
+    app.logger.debug(f"Sending GraphQL query for order details with payload: {payload}")
+
     try:
-        resp = requests.post(ALLVALUE_GRAPHQL_ENDPOINT, headers=headers, data=query)
+        resp = requests.post(ALLVALUE_GRAPHQL_ENDPOINT, headers=headers, json=payload, timeout=10)
         resp.raise_for_status()
         data = resp.json()
+
         if "errors" in data:
             app.logger.error(f"GraphQL Error: {data['errors']}")
             raise OrderProcessingError(f"GraphQL Error: {data['errors']}")
+
         return data["data"]["order"]
+
     except requests.exceptions.RequestException as e:
         app.logger.error(f"fetch_order_details error: {e}")
         raise OrderProcessingError(f"fetch_order_details error: {e}")
+
 
 def persist_order_data(order_data):
     """将订单数据持久化到数据库"""
@@ -426,7 +494,7 @@ def persist_order_data(order_data):
     return order_id
 
 
-def print_order_if_enabled(order_data,should_print = True):
+def print_order_if_enabled(order_data, should_print=True):
     """根据配置决定是否打印订单。"""
     if get_setting('auto_print_enabled') == 'true' and should_print:
         default_printer = get_default_printer()
@@ -439,7 +507,8 @@ def print_order_if_enabled(order_data,should_print = True):
             return False
     return True
 
-def process_order_webhook(order_node_id,should_print = True):
+
+def process_order_webhook(order_node_id, should_print=True):
     """处理订单 Webhook 的主逻辑。"""
     try:
         access_token = get_allvalue_access_token()
@@ -447,10 +516,13 @@ def process_order_webhook(order_node_id,should_print = True):
         raw_order_data = fetch_order_details(access_token, order_node_id)
         order_data = parse_order_data(raw_order_data)
         order_id = persist_order_data(order_data)
-        print_order_if_enabled(order_data,should_print)
-        update_order(order_id, "已打印")
+        print_success = print_order_if_enabled(order_data, should_print)
+        if print_success:
+            update_order(order_id, "已打印")
+        else:
+            update_order(order_id, "未打印")
         return True
-    except (requests.exceptions.RequestException, OrderProcessingError) as e: #捕捉所有自定义和requests的异常
+    except (requests.exceptions.RequestException, OrderProcessingError) as e:
         app.logger.error(f"处理订单webhook时发生错误: {e}")
         return False
     except Exception as e:
@@ -460,6 +532,11 @@ def process_order_webhook(order_node_id,should_print = True):
 
 @app.route('/webhook', methods=['POST'])
 def handle_webhook():
+    polling_enabled = get_setting('polling_enabled') == 'true'
+    if polling_enabled:
+        app.logger.info("轮询已启用，忽略 Webhook 请求。")
+        return jsonify({"status": "ignored", "msg": "Polling is enabled, Webhook ignored."}), 200
+
     if not verify_webhook_signature(request):
         abort(401)
 
@@ -467,19 +544,22 @@ def handle_webhook():
     if not data:
         abort(400)
 
+    # 统一处理所有订单相关的 Webhook
     topic = request.headers.get('X-AllValue-Topic')
-    try:
-        handler = webhook_handlers.get(topic)
-        if handler:
-            return handler.handle(request, data)
+    if topic and topic.startswith('orders/'):
+        order_node_id = data.get("nodeId")
+        if not order_node_id:
+            app.logger.error("Webhook data does not contain nodeId")
+            return jsonify({"status": "fail", "msg": "Webhook data does not contain nodeId"}), 400
+
+        if process_order_webhook(order_node_id):
+            return jsonify({"status": "success"}), 200
         else:
-            app.logger.warning(f"未知 Webhook Topic: {topic}")
-            return jsonify({"status": "fail", "msg": f"Unknown webhook topic: {topic}"}), 400
-    except Exception as e:
-        app.logger.exception("处理 webhook 时发生未知错误:")
-        return jsonify({"status": "fail", "msg": "Internal server error"}), 500
+            return jsonify({"status": "fail", "msg": "Failed to process order webhook"}), 500
+    else:
+        app.logger.warning(f"Received webhook with unknown topic: {topic}")
+        return jsonify({"status": "fail", "msg": f"Unknown webhook topic: {topic}"}), 400
 
 
 if __name__ == "__main__":
-    init_db()
     app.run(host='0.0.0.0', port=5000, debug=True)
