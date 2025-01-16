@@ -44,6 +44,7 @@ def init_db():
             cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('default_printer', '')")
             cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('auto_print_enabled', 'false')")
             cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('polling_enabled', 'false')")
+            cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('print_method', 'text')")
             conn.commit()
 
 def get_setting(key):

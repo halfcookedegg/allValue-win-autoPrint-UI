@@ -1,30 +1,27 @@
-import atexit
 import datetime
-import requests
-import os
 import hashlib
-import logging
 import json
-import webhook_handlers
-from flask import Flask, request, jsonify, render_template, redirect, url_for, abort
-import win32print
+import logging
+import os
 
-from token_manager import get_allvalue_access_token
+import requests
+import win32print
+from apscheduler.schedulers.background import BackgroundScheduler
+from flask import Flask, request, jsonify, render_template, redirect, url_for, abort
 import print_helper
 from database import (
     init_db, get_setting, set_setting,
     insert_or_update_order, get_all_orders, update_order, get_order_by_id
 )
-
-from apscheduler.schedulers.background import BackgroundScheduler
+from token_manager import get_allvalue_access_token
 
 app = Flask(__name__)
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 app.logger.setLevel(logging.INFO)
-# todo: 添加值
-shop = "test"
+
+shop = ""
 ALLVALUE_GRAPHQL_ENDPOINT = f"https://{shop}.myallvalue.com/admin/api/open/graphql/v202108"
 ALLVALUE_WEBHOOK_SECRET = os.environ.get("ALLVALUE_WEBHOOK_SECRET")
 TIME_FILE = "uptime.json"
@@ -251,17 +248,21 @@ def index():
     orders = get_all_orders()
     return render_template("index.html", orders=orders)
 
-@app.route("/print/<int:order_id>")
+@app.route("/print/<string:order_id>")
 def print_order_route(order_id):
     order = get_order_by_id(order_id)
     if not order:
         return "Order not found", 404
     default_printer = get_setting('default_printer')
+    print_method = get_setting('print_method') # 获取用户选择的打印方式
     if default_printer:
         win32print.SetDefaultPrinter(default_printer)
-        print_helper.print_order(order["order_json"])
-        update_order(order_id, "已打印")
-        return redirect(url_for('index'))
+        success = print_helper.print_order(order["order_json"], print_method) # 传入打印方式
+        if success:
+            update_order(order_id, "已打印")
+            return redirect(url_for('index'))
+        else:
+            return "Print failed", 500
     return "Printer not set", 500
 
 @app.route("/settings", methods=["GET", "POST"])
@@ -270,10 +271,12 @@ def settings():
         default_printer = request.form.get("default_printer")
         auto_print_enabled = request.form.get("auto_print_enabled") == 'on'
         polling_enabled = request.form.get("polling_enabled") == 'on'
+        print_method = request.form.get("print_method")
 
         set_setting("default_printer", default_printer)
         set_setting("auto_print_enabled", str(auto_print_enabled).lower())
         set_setting("polling_enabled", str(polling_enabled).lower())
+        set_setting("print_method", print_method)
 
         global scheduler_started
         if polling_enabled and not scheduler_started:
@@ -295,6 +298,7 @@ def settings():
                            default_printer=get_setting('default_printer'),
                            auto_print_enabled=get_setting('auto_print_enabled') == 'true',
                            polling_enabled=get_setting('polling_enabled') == 'true',
+                           print_method=get_setting('print_method'),
                            printers=[printer[2] for printer in win32print.EnumPrinters(2)])
 
 def verify_webhook_signature(request):
@@ -494,14 +498,18 @@ def persist_order_data(order_data):
     return order_id
 
 
-def print_order_if_enabled(order_data, should_print=True):
+def print_order_if_enabled(order_data, should_print=True, print_method = "text"):
     """根据配置决定是否打印订单。"""
     if get_setting('auto_print_enabled') == 'true' and should_print:
         default_printer = get_default_printer()
         if default_printer:
             win32print.SetDefaultPrinter(default_printer)
-            print_helper.print_order(order_data)
-            return True
+            success = print_helper.print_order(order_data, print_method)
+            if success:
+                return True
+            else:
+                app.logger.warning("打印失败")
+                return False
         else:
             app.logger.warning("未设置默认打印机。")
             return False
@@ -516,7 +524,8 @@ def process_order_webhook(order_node_id, should_print=True):
         raw_order_data = fetch_order_details(access_token, order_node_id)
         order_data = parse_order_data(raw_order_data)
         order_id = persist_order_data(order_data)
-        print_success = print_order_if_enabled(order_data, should_print)
+        print_method = get_setting('print_method')
+        print_success = print_order_if_enabled(order_data, should_print, print_method)
         if print_success:
             update_order(order_id, "已打印")
         else:
