@@ -37,14 +37,6 @@
         <label for="auto_print_enabled">自动打印:</label>
         <input type="checkbox" id="auto_print_enabled" name="auto_print_enabled" {% if auto_print_enabled %}checked{% endif %}>
 
-        <div class="form-group">
-            <label for="print_method">打印方式:</label>
-                <select name="print_method" id="print_method" class="form-control">
-                    <option value="text" {% if print_method == 'text' %}selected="selected"{% endif %}>普通文本</option>
-                    <option value="escpos" {% if print_method == 'escpos' %}selected{% endif %}>ESC/POS 指令</option>
-                </select>
-        </div>
-
         <label for="polling_enabled">启用轮询（每小时检查遗漏订单）:</label>
         <input type="checkbox" id="polling_enabled" name="polling_enabled" {% if polling_enabled %}checked{% endif %}>
         <br><br>

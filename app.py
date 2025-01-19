@@ -8,7 +8,9 @@ import requests
 import win32print
 from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask, request, jsonify, render_template, redirect, url_for, abort
+
 import print_helper
+import print_helper_old
 from database import (
     init_db, get_setting, set_setting,
     insert_or_update_order, get_all_orders, update_order, get_order_by_id
@@ -254,15 +256,14 @@ def print_order_route(order_id):
     if not order:
         return "Order not found", 404
     default_printer = get_setting('default_printer')
-    print_method = get_setting('print_method') # 获取用户选择的打印方式
     if default_printer:
         win32print.SetDefaultPrinter(default_printer)
-        success = print_helper.print_order(order["order_json"], print_method) # 传入打印方式
+        success = print_helper.print_order(order["order_json"])  #  调用 printer_helper.py 中的 print_order 函数
         if success:
             update_order(order_id, "已打印")
             return redirect(url_for('index'))
         else:
-            return "Print failed", 500
+            return "Print failed", 500  # 返回错误信息
     return "Printer not set", 500
 
 @app.route("/settings", methods=["GET", "POST"])
@@ -271,12 +272,12 @@ def settings():
         default_printer = request.form.get("default_printer")
         auto_print_enabled = request.form.get("auto_print_enabled") == 'on'
         polling_enabled = request.form.get("polling_enabled") == 'on'
-        print_method = request.form.get("print_method")
+        # print_method = request.form.get("print_method")
 
         set_setting("default_printer", default_printer)
         set_setting("auto_print_enabled", str(auto_print_enabled).lower())
         set_setting("polling_enabled", str(polling_enabled).lower())
-        set_setting("print_method", print_method)
+        # set_setting("print_method", print_method)
 
         global scheduler_started
         if polling_enabled and not scheduler_started:
@@ -298,7 +299,7 @@ def settings():
                            default_printer=get_setting('default_printer'),
                            auto_print_enabled=get_setting('auto_print_enabled') == 'true',
                            polling_enabled=get_setting('polling_enabled') == 'true',
-                           print_method=get_setting('print_method'),
+                           # print_method=get_setting('print_method'),
                            printers=[printer[2] for printer in win32print.EnumPrinters(2)])
 
 def verify_webhook_signature(request):
@@ -498,13 +499,13 @@ def persist_order_data(order_data):
     return order_id
 
 
-def print_order_if_enabled(order_data, should_print=True, print_method = "text"):
+def print_order_if_enabled(order_data, should_print=True):
     """根据配置决定是否打印订单。"""
     if get_setting('auto_print_enabled') == 'true' and should_print:
         default_printer = get_default_printer()
         if default_printer:
             win32print.SetDefaultPrinter(default_printer)
-            success = print_helper.print_order(order_data, print_method)
+            success = print_helper.print_order(order_data)
             if success:
                 return True
             else:
@@ -525,7 +526,7 @@ def process_order_webhook(order_node_id, should_print=True):
         order_data = parse_order_data(raw_order_data)
         order_id = persist_order_data(order_data)
         print_method = get_setting('print_method')
-        print_success = print_order_if_enabled(order_data, should_print, print_method)
+        print_success = print_order_if_enabled(order_data, should_print)
         if print_success:
             update_order(order_id, "已打印")
         else:
