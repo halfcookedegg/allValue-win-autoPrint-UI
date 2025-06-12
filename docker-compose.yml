@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+
+  allvalue_ui:
+    build: .
+
+    restart: always
+
+    ports:
+      - "5000:5000"
+
+    volumes:
+
+      - /var/run/cups/cups.sock:/var/run/cups/cups.sock
+
+      - ./orders.db:/app/orders.db
+
+      - ./uptime.json:/app/uptime.json
+
+    env_file:
+      - .env
+
