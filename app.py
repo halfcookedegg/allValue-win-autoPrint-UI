@@ -10,20 +10,25 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask, request, jsonify, render_template, redirect, url_for, abort
 
 import print_helper
+import print_helper_pdf
 import print_helper_old
 from database import (
     init_db, get_setting, set_setting,
-    insert_or_update_order, get_all_orders, update_order, get_order_by_id
+    insert_or_update_order, get_all_orders, update_order, get_order_by_db_id
 )
 from token_manager import get_allvalue_access_token
 
+
+weasyprint_logger = logging.getLogger('weasyprint')
+weasyprint_logger.setLevel(logging.DEBUG)
+weasyprint_logger.addHandler(logging.StreamHandler())
 app = Flask(__name__)
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 app.logger.setLevel(logging.INFO)
 
-shop = ""
+shop = "一品滋味"
 ALLVALUE_GRAPHQL_ENDPOINT = f"https://{shop}.myallvalue.com/admin/api/open/graphql/v202108"
 ALLVALUE_WEBHOOK_SECRET = os.environ.get("ALLVALUE_WEBHOOK_SECRET")
 TIME_FILE = "uptime.json"
@@ -131,7 +136,7 @@ def fetch_missing_orders(start_time):
     page_size = 50  # 每次请求50个订单
 
     # 构建查询字符串，使用 created_at_range 过滤
-    filter_str = f"created_at_range:[{start_ts} TO {end_ts}]"
+    filter_str = f"created_at_range:[{start_ts} TO {end_ts}] AND financial_state:PAID"
     app.logger.debug(f"Filter string: {filter_str}")
 
     while has_next_page:
@@ -183,7 +188,7 @@ def poll_orders():
         start_time = datetime.datetime.utcnow() - datetime.timedelta(hours=1)
     if start_time and start_time < end_time:
         app.logger.info(f"轮询时间范围：{start_time} 到 {end_time}")
-        missing_orders = fetch_missing_orders(start_time, end_time)
+        missing_orders = fetch_missing_orders(start_time)
         if missing_orders:
             app.logger.info(f"发现 {len(missing_orders)} 个遗漏订单")
             for order in missing_orders:
@@ -250,21 +255,27 @@ def index():
     orders = get_all_orders()
     return render_template("index.html", orders=orders)
 
-@app.route("/print/<string:order_id>")
-def print_order_route(order_id):
-    order = get_order_by_id(order_id)
-    if not order:
-        return "Order not found", 404
-    default_printer = get_setting('default_printer')
-    if default_printer:
-        win32print.SetDefaultPrinter(default_printer)
-        success = print_helper.print_order(order["order_json"])  #  调用 printer_helper.py 中的 print_order 函数
-        if success:
-            update_order(order_id, "已打印")
-            return redirect(url_for('index'))
-        else:
-            return "Print failed", 500  # 返回错误信息
-    return "Printer not set", 500
+@app.route("/print/<string:order_db_id_from_route>")
+def print_order_route(order_db_id_from_route):
+    order_record = get_order_by_db_id(order_db_id_from_route)
+    if not order_record:
+        return "订单未找到", 404
+
+    order_data_to_print = order_record["order_json"]
+    printer_name_setting = get_setting('default_printer')
+    print_method_setting = get_setting('print_method')
+
+    if not printer_name_setting:
+        return "打印失败：未在系统中设置目标打印机。", 500
+
+    app.logger.info(f"手动打印请求：订单 {order_data_to_print.get('order_id')} (DB ID: {order_db_id_from_route})。")
+    success = dispatch_print_job(order_data_to_print, printer_name_setting, print_method_setting)
+
+    if success:
+        update_order(order_db_id_from_route, "已打印") # 使用从路由获取的数据库ID
+        return redirect(url_for('index'))
+    else:
+        return f"打印失败 (方式: {print_method_setting or 'escpos'})。请检查应用日志获取详细信息。", 500
 
 @app.route("/settings", methods=["GET", "POST"])
 def settings():
@@ -272,12 +283,12 @@ def settings():
         default_printer = request.form.get("default_printer")
         auto_print_enabled = request.form.get("auto_print_enabled") == 'on'
         polling_enabled = request.form.get("polling_enabled") == 'on'
-        # print_method = request.form.get("print_method")
+        print_method = request.form.get("print_method")
 
         set_setting("default_printer", default_printer)
         set_setting("auto_print_enabled", str(auto_print_enabled).lower())
         set_setting("polling_enabled", str(polling_enabled).lower())
-        # set_setting("print_method", print_method)
+        set_setting("print_method", print_method)
 
         global scheduler_started
         if polling_enabled and not scheduler_started:
@@ -299,7 +310,7 @@ def settings():
                            default_printer=get_setting('default_printer'),
                            auto_print_enabled=get_setting('auto_print_enabled') == 'true',
                            polling_enabled=get_setting('polling_enabled') == 'true',
-                           # print_method=get_setting('print_method'),
+                           print_method=get_setting('print_method')or 'escpos',
                            printers=[printer[2] for printer in win32print.EnumPrinters(2)])
 
 def verify_webhook_signature(request):
@@ -499,46 +510,104 @@ def persist_order_data(order_data):
     return order_id
 
 
-def print_order_if_enabled(order_data, should_print=True):
-    """根据配置决定是否打印订单。"""
+def print_order_if_enabled(order_data, db_order_id_to_update, should_print=True):
     if get_setting('auto_print_enabled') == 'true' and should_print:
-        default_printer = get_default_printer()
-        if default_printer:
-            win32print.SetDefaultPrinter(default_printer)
-            success = print_helper.print_order(order_data)
-            if success:
-                return True
-            else:
-                app.logger.warning("打印失败")
-                return False
-        else:
-            app.logger.warning("未设置默认打印机。")
+        printer_name_setting = get_default_printer()  # 从设置中获取打印机名称
+        print_method_setting = get_setting('print_method')  # 从设置中获取打印方法
+
+        if not printer_name_setting:
+            app.logger.warning(f"自动打印订单 {order_data.get('order_id')} 失败：打印机名称未在设置中配置。")
+            update_order(db_order_id_to_update, "打印失败 (未配置打印机)")  # 更新状态
             return False
-    return True
+
+        app.logger.info(f"自动打印已启用。尝试为订单 {order_data.get('order_id')} 调用 dispatch_print_job。")
+        success = dispatch_print_job(order_data, printer_name_setting, print_method_setting)
+
+        # 基于 dispatch_print_job 的结果更新数据库状态
+        if success:
+            update_order(db_order_id_to_update, "已打印")
+        else:
+            update_order(db_order_id_to_update, "打印失败")
+        return success
+
+    app.logger.info(f"订单 {order_data.get('order_id')}：自动打印未启用或本次无需打印。")
+    update_order(db_order_id_to_update, "未打印 (自动打印禁用或无需)")  # 更新状态
+    return None
 
 
 def process_order_webhook(order_node_id, should_print=True):
     """处理订单 Webhook 的主逻辑。"""
+    db_order_id = None  # 用于存储数据库中的订单ID
     try:
         access_token = get_allvalue_access_token()
+        if not access_token:
+            app.logger.error("无法获取Access Token，处理 Webhook 失败。")
+            # 这里可能需要一个机制来处理 db_order_id 未知的情况，或不更新状态
+            return False  # 直接返回失败
 
         raw_order_data = fetch_order_details(access_token, order_node_id)
-        order_data = parse_order_data(raw_order_data)
-        order_id = persist_order_data(order_data)
-        print_method = get_setting('print_method')
-        print_success = print_order_if_enabled(order_data, should_print)
-        if print_success:
-            update_order(order_id, "已打印")
-        else:
-            update_order(order_id, "未打印")
-        return True
-    except (requests.exceptions.RequestException, OrderProcessingError) as e:
-        app.logger.error(f"处理订单webhook时发生错误: {e}")
+        order_data_parsed = parse_order_data(raw_order_data)  # 重命名以区分
+
+        # 先持久化订单，获取数据库中的ID
+        db_order_id = persist_order_data(order_data_parsed)  # 这个ID用于更新状态
+        if not db_order_id:
+            app.logger.error(f"持久化订单 {order_data_parsed.get('order_id')} 失败。")
+            return False  # 持久化失败，则不继续打印
+
+        # 调用 print_order_if_enabled，它内部会根据结果更新数据库状态
+        # print_order_if_enabled 现在返回 True(成功发送), False(发送失败), None(未尝试)
+        print_attempt_result = print_order_if_enabled(order_data_parsed, db_order_id, should_print)
+
+        # process_order_webhook 的返回值仅表示webhook处理流程是否成功，不直接等于打印结果
+        return True  # Webhook处理流程本身执行完毕
+
+    except OrderProcessingError as ope:  # OrderProcessingError 是我们自定义的错误
+        app.logger.error(f"处理订单 Webhook {order_node_id} 时发生 OrderProcessingError: {ope}")
+        if db_order_id:  # 如果订单已存入数据库，但后续处理失败
+            update_order(db_order_id, f"处理错误: {ope}")
+        return False
+    except requests.exceptions.RequestException as req_e:
+        app.logger.error(f"处理订单 Webhook {order_node_id} 时发生网络请求错误: {req_e}")
+        if db_order_id:
+            update_order(db_order_id, "处理错误 (网络)")
         return False
     except Exception as e:
-        app.logger.exception("处理订单webhook时发生未知错误:")
+        app.logger.exception(f"处理订单 Webhook {order_node_id} 时发生未知错误:")
+        if db_order_id:
+            update_order(db_order_id, "处理错误 (未知)")
         return False
 
+
+def dispatch_print_job(order_data_for_printing, printer_name_from_settings, print_method_from_settings):
+    """
+    根据打印方法设置，分发打印任务到相应的打印助手。
+    """
+    success = False
+    actual_print_method = print_method_from_settings or 'escpos' # 默认使用escpos
+
+    # 确保 shop_name 存在于 order_data 中 (见下方关于问题3的讨论)
+    # 如果决定由 app.py 统一添加 shop_name:
+    if 'shop_name' not in order_data_for_printing:
+        order_data_for_printing['shop_name'] = shop # 使用 app.py 中的全局 shop 变量
+
+    if actual_print_method == 'pdf':
+        app.logger.info(f"分发任务：使用PDF打印助手处理订单 {order_data_for_printing.get('order_id')}")
+        success = print_helper_pdf.print_order(
+            order_data_for_printing,
+            printer_name=printer_name_from_settings
+        )
+    else: # 'escpos'
+        app.logger.info(f"分发任务：使用ESC/POS打印助手处理订单 {order_data_for_printing.get('order_id')}")
+        if printer_name_from_settings:
+            try:
+                win32print.SetDefaultPrinter(printer_name_from_settings)
+            except Exception as e:
+                app.logger.error(f"设置默认打印机 '{printer_name_from_settings}' 失败: {e}")
+                return False # 无法设置默认打印机，打印可能失败
+
+        success = print_helper.print_order(order_data_for_printing)
+
+    return success
 
 @app.route('/webhook', methods=['POST'])
 def handle_webhook():

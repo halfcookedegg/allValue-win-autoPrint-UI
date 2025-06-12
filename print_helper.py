@@ -24,6 +24,8 @@ def generate_print_text(order_data):
 
     # ESC/POS 指令序列
     INIT = b'\x1B\x40'  # 初始化打印机
+    SET_UTF8_ENCODING = b'\x1C\x28\x43\x01\x00\x30\x32'
+    SELECT_SIMPLIFIED_CHINESE_FONT = b'\x1C\x28\x43\x03\x00\x3C\x00\x14'
     TXT_NORMAL = b'\x1B\x21\x00'  # 正常字体
     TXT_DOUBLE_HEIGHT = b'\x1B\x21\x10'  # 倍高字体
     TXT_DOUBLE_WIDTH = b'\x1B\x21\x20'  # 倍宽字体
@@ -35,7 +37,10 @@ def generate_print_text(order_data):
 
     commands = b''
     commands += INIT
-    commands += SELECT_CHINESE
+    commands += SET_UTF8_ENCODING
+    # commands += SELECT_CHINESE
+    commands += SELECT_SIMPLIFIED_CHINESE_FONT
+    # commands += TXT_NORMAL
     commands += escpos_center_text("一品香") + LF  # 店铺名称, 居中
 
     # 订单信息

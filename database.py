@@ -94,8 +94,10 @@ def insert_or_update_order(order_data):
                 return cursor.lastrowid
     return None
 
-def update_order(order_id, status, other_fields=None):
-    """更新订单状态和其他字段。"""
+# 在 database.py 中
+
+def update_order(db_id, status, other_fields=None): # 1. 参数名从 order_id 改为 db_id，更清晰
+    """更新订单状态和其他字段，基于数据库主键 ID。"""
     with get_db_connection() as conn:
         if conn:
             cursor = conn.cursor()
@@ -107,12 +109,12 @@ def update_order(order_id, status, other_fields=None):
                     update_query += f", {key}=?"
                     params.append(value)
 
-            update_query += " WHERE order_id=?"  # 使用 order_id 更新
-            params.append(order_id)
+            update_query += " WHERE id=?"  # 2. SQL查询条件改为 WHERE id=?
+            params.append(db_id)          # 3. 将传入的 db_id 作为参数
 
             cursor.execute(update_query, params)
             conn.commit()
-            logger.info(f"更新订单 {order_id} 状态为 {status}。")
+            logger.info(f"更新数据库订单记录 ID {db_id} 的状态为 {status}。")
 
 def get_all_orders():
     """获取所有订单，按 ID 降序排列。"""
@@ -141,26 +143,27 @@ def get_all_orders():
             return orders
     return []
 
-def get_order_by_id(order_id):
-    """通过 order_id 获取订单。"""
+def get_order_by_db_id(db_id): # 1. 函数名和参数名修改，表明是通过数据库ID查询
+    """通过数据库主键 ID 获取订单。"""
     with get_db_connection() as conn:
         if conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id, order_id, order_json, status FROM orders WHERE order_id=?", (order_id,))  # 使用 order_id 查询
+            # 2. SQL查询条件改为 WHERE id=?
+            cursor.execute("SELECT id, order_id, order_json, status, created_at FROM orders WHERE id=?", (db_id,))
             row = cursor.fetchone()
             if row:
                 try:
                     order_json = json.loads(row["order_json"])
-                    # 确保 order_json 中包含 order_id 字段
                     if "order_id" not in order_json:
                         order_json["order_id"] = row["order_id"]
                 except json.JSONDecodeError:
-                    logger.error(f"解析订单 JSON 失败，订单 ID: {row['id']}")
-                    order_json = {"order_id": row["order_id"]}  # 至少包含 order_id
+                    logger.error(f"解析订单 JSON 失败，数据库 ID: {row['id']}")
+                    order_json = {"order_id": row["order_id"]}
                 return {
                     "id": row["id"],
                     "order_id": row["order_id"],
                     "order_json": order_json,
                     "status": row["status"],
+                    "created_at": row["created_at"], # 从数据库记录中获取创建时间
                 }
     return None
