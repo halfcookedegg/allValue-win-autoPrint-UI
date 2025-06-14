@@ -1,4 +1,4 @@
-# print_helper_pdf.py (Linux专用版)
+# print_helper_pdf.py (本地测试版)
 
 import logging
 import datetime
@@ -6,16 +6,30 @@ import os
 import subprocess
 import tempfile
 from jinja2 import Environment, FileSystemLoader, select_autoescape
-from xhtml2pdf import pisa  # 使用 xhtml2pdf 替代 WeasyPrint
+from xhtml2pdf import pisa
 
 logger = logging.getLogger(__name__)
 
 
-# --- HTML和PDF生成逻辑 ---
+def path_callback(path, *args, **kwargs):
+    """
+    一个回调函数，用于告诉 xhtml2pdf 如何解析我们自定义的路径。
+    """
+    if path.startswith('fonts://'):
+        font_path = os.path.join(
+            os.path.dirname(os.path.realpath(__file__)),
+            'fonts',
+            path.replace('fonts://', '')
+        )
+        logger.debug(f"字体路径回调：解析 '{path}' -> '{font_path}'")
+        return font_path
+
+    # 对于其他所有路径，返回原始路径让xhtml2pdf自己处理
+    return path
+
 
 def generate_receipt_html(order_data):
     """使用Jinja2模板从订单数据生成HTML字符串。"""
-    # 假设 'templates' 文件夹位于运行 app.py 的当前工作目录
     template_folder_path = 'templates'
     try:
         env = Environment(
@@ -34,18 +48,17 @@ def generate_receipt_html(order_data):
 
 
 def generate_pdf_from_html_content(html_content, pdf_filepath):
-    """使用 xhtml2pdf 将HTML字符串转换为PDF文件。"""
+    """使用 xhtml2pdf 将HTML字符串转换为PDF文件，并使用路径回调。"""
     logger.info("正在使用 xhtml2pdf 生成PDF...")
     try:
-        # 使用 'w+b' 模式打开文件，供 xhtml2pdf 写入二进制数据
         with open(pdf_filepath, "w+b") as pdf_file:
             pisa_status = pisa.CreatePDF(
-                html_content,  # HTML源内容
-                dest=pdf_file,  # 目标PDF文件对象
-                encoding='UTF-8'  # 确保使用UTF-8编码
+                html_content,
+                dest=pdf_file,
+                encoding='UTF-8',
+                link_callback=path_callback  # 告诉xhtml2pdf使用我们的路径解析函数
             )
 
-        # 检查转换过程中是否有错误
         if pisa_status.err:
             logger.error(f"xhtml2pdf 转换错误, 错误码: {pisa_status.err}, {pisa_status.log}")
             return False
@@ -120,25 +133,3 @@ def print_order(order_data, printer_name=None, keep_pdf_for_internal_debug=False
         logger.info(f"PDF模块: 调试模式，保留PDF文件: {pdf_filepath}")
 
     return print_success
-
-
-# --- 用于模块独立测试的代码 ---
-if __name__ == '__main__':
-    logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-
-    # 准备测试数据
-    sample_data = {
-        "shop_name": "Linux模块测试店铺",
-        "order_id": "PDF_LINUX_001",
-        "created_at": datetime.datetime.now().isoformat(),
-        # ... 其他你模板需要的字段 ...
-    }
-
-    logger.info("--- 开始 print_helper_pdf.py (Linux版) 模块独立测试 ---")
-
-    # 直接调用主函数进行测试
-    # 在没有打印机的环境下，可以只测试PDF生成，并保留文件
-    print_order(sample_data, printer_name="TestPrinter", keep_pdf_for_internal_debug=True)
-    # 这会生成一个PDF文件在你的临时目录，你可以去找到它并检查内容
-    logger.info("--- 独立测试结束 ---")
-

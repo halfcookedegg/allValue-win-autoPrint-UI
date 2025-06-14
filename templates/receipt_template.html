@@ -4,21 +4,30 @@
     <meta charset="UTF-8">
     <title>小票</title>
     <style>
-         /*--- 页面大小和字体基础设置 --- */
-        /*@page {*/
-        /*    !* 设置页面宽度为72mm，对应80mm宽的纸卷，并留出打印机硬件边距。高度自动。 *!*/
-        /*    size: 72mm 1000mm;*/
-        /*    !* 页面本身不留边距，由body的padding来控制内容区 *!*/
-        /*    margin: 3mm;*/
-        /*}*/
+        /* --- 页面尺寸和字体定义 --- */
+        @font-face {
+            font-family: 'ReceiptFont';
+            font-weight: normal;
+            src: url('fonts/NotoSansSC-Regular.ttf');
+        }
+
+        @font-face {
+            font-family: 'ReceiptFont'; /* 字体家族名称保持不变 */
+            font-weight: bold; /* 指定这是粗体字重 */
+            src: url('fonts/NotoSansSC-Bold.ttf'); /* 指向我们的粗体文件 */
+        }
+
+        @page {
+            size: 72mm 1000mm;
+            margin: 3mm;
+        }
+
         body {
-            font-family: 'Noto Sans CJK SC', 'Source Han Sans SC', sans-serif;
-            font-size: 10pt; /* 小票字体通常为 9pt-10pt */
+            font-family: 'ReceiptFont', sans-serif;
+            font-size: 10pt;
             margin: 0;
-            padding: 3mm; /* 在内容四周留出3mm的内边距 */
-            box-sizing: border-box; /* 确保padding不会撑大宽度 */
-            width: 100%;
-            font-weight: bold;
+            padding: 0;
+            font-weight: bold; /* 全局字体加粗 */
         }
 
         /* --- 通用样式 --- */
@@ -26,114 +35,114 @@
         .text-right { text-align: right; }
         .bold { font-weight: bold; }
         .section { margin-top: 5mm; margin-bottom: 5mm; }
-        .info-block div { margin-bottom: 1mm; } /* 让订单、客户信息等块内的行间距稍微拉开一点 */
+        .info-block div { margin-bottom: 1mm; }
 
         /* --- 特定元素样式 --- */
         .shop-name { font-size: 14pt; font-weight: bold; margin-bottom: 5mm; }
 
         hr.separator {
             border: none;
-            border-top: 1px dashed #333; /* 虚线分隔 */
+            border-top: 1px dashed #333;
             margin-top: 5mm;
             margin-bottom: 5mm;
         }
 
-        /* --- 商品列表样式 --- */
-        .item-header {
-            display: flex;
-            justify-content: space-between;
+        /* --- 为表格布局设计的干净样式 --- */
+        .item-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .item-table th {
             font-weight: bold;
-            border-bottom: 1px solid #333; /* 表头下方加一条实线，更清晰 */
+            text-align: left;
+            border-bottom: 1px solid #333;
             padding-bottom: 2mm;
-            margin-bottom: 3mm; /* 表头和第一个商品之间的间距 */
+            vertical-align: bottom;
         }
 
-        .item-entry {
-            margin-bottom: 6mm; /* 每个商品条目之间的垂直间距 */
-        }
-
-        .line-item {
-            display: flex;
-            justify-content: space-between; /* 商品名和数量两端对齐 */
-        }
-
-        .item-name {
-            flex-grow: 1;
-            word-break: break-all; /* 允许长商品名自动换行 */
-            padding-right: 5px; /* 与数量之间留出一点空隙 */
-        }
-
-        .item-qty {
-            min-width: 30px; /* 给数量列一个最小宽度，方便对齐 */
+        .item-table th.qty-header {
             text-align: right;
         }
 
+        .item-table td {
+            vertical-align: top;
+            padding-top: 4mm; /* 每个菜品之间的上下间隔 */
+        }
+
+        .item-qty {
+            text-align: right;
+            /* 给数量列一个固定的最小宽度，让其对齐更美观 */
+            min-width: 40px;
+            padding-left: 10px; /* 确保与商品名之间有空隙 */
+        }
+
         .item-options {
-            font-size: 8pt; /* 规格字体小一点 */
-            padding-left: 15px;
+            font-size: 8pt;
             color: #555;
-            margin-top: 1mm; /* 规格与商品名之间的间距 */
+            padding-top: 1mm;
         }
     </style>
 </head>
 <body>
+    <!-- 订单头部信息 -->
     <div class="text-center shop-name">{{ order.shop_name | default('你的店铺名') }}</div>
-
     <div class="info-block">
         <div>订单号: {{ order.order_id | default('') }}</div>
         <div>下单时间: {{ order.created_at[:19] | default('') }}</div>
     </div>
-
     <div class="info-block section">
         <div>顾客姓名:
             {% set s_fname = order.shipping_address.firstName | default('', true) %}
             {% set s_lname = order.shipping_address.lastName | default('', true) %}
             {% set c_fname = order.customer_info.firstName | default('', true) %}
             {% set c_lname = order.customer_info.lastName | default('', true) %}
-
             {% if s_fname or s_lname %}{{ s_fname }} {{ s_lname }}{% elif c_fname or c_lname %}{{ c_fname }} {{ c_lname }}{% else %}(无姓名){% endif %}
         </div>
         <div>顾客电话: {{ order.shipping_address.phone | default('') }}</div>
         <div>顾客邮箱: {{ order.contact_email | default('') }}</div>
     </div>
-
     <div class="info-block">
         <div>{{ order.shipping_address.address1 | default('') }}</div>
         <div>{{ order.shipping_address.address2 | default('') }}</div>
         <div>{{ order.shipping_address.zip | default('') }} {{ order.shipping_address.countryCode | default('') }}</div>
     </div>
-
     <hr class="separator">
 
-    <div class="item-header">
-        <span class="item-name">商品</span>
-        <span class="item-qty">数量</span>
-    </div>
-
-    <div class="section">
-        {% for item in order.line_items %}
-        <div class="item-entry">
-            <div class="line-item">
-                <span class="item-name">{{ item.name | default('') }}</span>
-                <span class="item-qty">{{ item.quantity | default(0) }}</span>
-            </div>
+    <!-- 使用表格来布局商品列表 -->
+    <table class="item-table">
+        <thead>
+            <tr>
+                <th>商品</th>
+                <th class="qty-header">数量</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in order.line_items %}
+            <!-- 商品主行 -->
+            <tr>
+                <td class="item-name">{{ item.name | default('') }}</td>
+                <td class="item-qty">{{ item.quantity | default(0) }}</td>
+            </tr>
+            <!-- 规格行 (如果存在) -->
             {% if item.option_values %}
-            <div class="item-options">规格: {{ item.option_values | join(', ') }}</div>
+            <tr>
+                <td colspan="2" class="item-options">规格: {{ item.option_values | join(', ') }}</td>
+            </tr>
             {% endif %}
-        </div>
-        {% endfor %}
-    </div>
+            {% endfor %}
+        </tbody>
+    </table>
 
     <hr class="separator">
 
+    <!-- 订单尾部信息 -->
     <div class="section text-right bold">
         总计: {{ "%.2f" | format(order.total_price.amount | float) }} {{ order.total_price.currency_code | default('') }}
     </div>
-
     <div class="section">
         客户留言: {{ order.customer_message | default('') }}
     </div>
-
     <div class="section text-center">
         打印时间: {{ current_print_time }}
     </div>

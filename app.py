@@ -18,7 +18,7 @@ from database import (
     insert_or_update_order, get_all_orders, update_order, get_order_by_db_id
 )
 from token_manager import get_allvalue_access_token
-
+import platform
 app = Flask(__name__)
 
 # --- 日志和全局配置 ---
@@ -45,6 +45,7 @@ def get_printers():
     except Exception as e:
         app.logger.error(f"获取Linux打印机列表时出错: {e}")
         return []
+
 
 
 def dispatch_print_job(order_data, printer_name, print_method):
@@ -158,6 +159,12 @@ def print_order_route(db_id):
     order_record = get_order_by_db_id(db_id)
     if not order_record: return "订单未找到", 404
     printer_name = get_setting('default_printer')
+
+    # 仅测试用
+    # if not printer_name:
+    #     app.logger.warning("本地Docker测试：未在数据库中找到打印机设置，将使用'dummy_printer'作为占位符继续。")
+    #     printer_name = "dummy_printer"
+
     if not printer_name: return "打印失败：未设置目标打印机。", 500
     print_method = get_setting('print_method') or 'escpos'
     success = dispatch_print_job(order_record["order_json"], printer_name, print_method)
