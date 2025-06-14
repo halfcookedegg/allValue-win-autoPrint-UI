@@ -11,7 +11,7 @@ itsdangerous==2.2.0
 Jinja2==3.1.6
 MarkupSafe==3.0.2
 pillow==11.1.0
-reportlab==4.2.5
+reportlab==3.6.13
 requests==2.32.3
 tzdata==2024.2
 tzlocal==5.2

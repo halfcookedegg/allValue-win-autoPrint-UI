@@ -91,7 +91,7 @@
         </td>
 
         <td>
-                <a href="{{ url_for('print_order_route', order_db_id_from_route=order.id) }}" class="btn btn-primary">手动打印</a>
+                <a href="{{ url_for('print_order_route', db_id=order.id) }}" class="btn btn-primary">手动打印</a>
         </td>
     </tr>
     {% endfor %}
