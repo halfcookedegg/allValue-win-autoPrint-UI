@@ -4,8 +4,16 @@ import sqlite3
 import json
 import logging
 
-DB_NAME = 'orders.db'
+DATA_DIR = 'data'
+DB_NAME = os.path.join(DATA_DIR, 'orders.db')
+
+os.makedirs(DATA_DIR, exist_ok=True)
+
 logger = logging.getLogger(__name__)
+
+
+
+
 
 def get_db_connection():
     """获取数据库连接（使用上下文管理器）。"""

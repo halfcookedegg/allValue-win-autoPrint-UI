@@ -14,9 +14,8 @@ services:
 
       - /var/run/cups/cups.sock:/var/run/cups/cups.sock
 
-      - ./orders.db:/app/orders.db
+      - ./data:/app/data
 
-      - ./uptime.json:/app/uptime.json
 
     env_file:
       - .env

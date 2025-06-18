@@ -1,4 +1,4 @@
-# print_helper_pdf.py (本地测试版)
+# print_helper_pdf.py
 
 import logging
 import datetime

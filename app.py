@@ -18,7 +18,9 @@ from database import (
     insert_or_update_order, get_all_orders, update_order, get_order_by_db_id
 )
 from token_manager import get_allvalue_access_token
-import platform
+
+DATA_DIR = 'data'
+TIME_FILE = os.path.join(DATA_DIR, "uptime.json")
 app = Flask(__name__)
 
 # --- 日志和全局配置 ---
@@ -29,7 +31,6 @@ shop = os.environ.get("SHOP_NAME", "一品滋味")
 ALLVALUE_GRAPHQL_ENDPOINT = f"https://{shop}.myallvalue.com/admin/api/open/graphql/v202108"
 ALLVALUE_WEBHOOK_SECRET = os.environ.get("ALLVALUE_WEBHOOK_SECRET")
 
-TIME_FILE = "uptime.json"
 scheduler = BackgroundScheduler(timezone="UTC")
 
 
